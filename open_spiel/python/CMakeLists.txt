@@ -248,6 +248,7 @@ set(PYTHON_TESTS ${PYTHON_TESTS}
   utils/file_logger_test.py
   utils/lru_cache_test.py
   utils/spawn_test.py
+  games/trading_game_test.py
 )
 
 # Add Jax tests if it is enabled.

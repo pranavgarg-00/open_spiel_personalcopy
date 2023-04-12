@@ -31,3 +31,4 @@ from open_spiel.python.games import iterated_prisoners_dilemma
 from open_spiel.python.games import kuhn_poker
 from open_spiel.python.games import liars_poker
 from open_spiel.python.games import tic_tac_toe
+from open_spiel.python.games import trading_game
