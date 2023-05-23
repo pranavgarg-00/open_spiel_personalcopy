@@ -34,12 +34,16 @@ import random
 
 import pyspiel
 
+class Action(enum.IntEnum):
+  BUY = 0
+  HOLD = 1
+  SELL = 2
+
 _DF = pd.read_csv("/work/pranavgarg_umass_edu/open_spiel/open_spiel/python/games/aapl_data.csv")
-_DONT_USE = 1000
-_NUM_PLAYERS = 1
-_MAX_ACTION = 10
-_GAME_LENGTH = 100
-_BALANCE = 1000
+_NUM_PLAYERS = 2
+_MAX_ACTION = 3
+_GAME_LENGTH = 10
+_BALANCE = 0
 _RANGE = [0,5000]
 _GAME_TYPE = pyspiel.GameType(
     short_name="trading_game",
@@ -48,7 +52,7 @@ _GAME_TYPE = pyspiel.GameType(
     chance_mode=pyspiel.GameType.ChanceMode.EXPLICIT_STOCHASTIC,
     information=pyspiel.GameType.Information.IMPERFECT_INFORMATION,
     utility=pyspiel.GameType.Utility.GENERAL_SUM,
-    reward_model=pyspiel.GameType.RewardModel.REWARDS,
+    reward_model=pyspiel.GameType.RewardModel.TERMINAL,
     max_num_players=_NUM_PLAYERS,
     min_num_players=_NUM_PLAYERS,
     provides_information_state_tensor=True,
@@ -63,12 +67,12 @@ _GAME_TYPE = pyspiel.GameType(
       "range_end":_RANGE[1]
     })
 _GAME_INFO = pyspiel.GameInfo(
-    num_distinct_actions=_MAX_ACTION*2 + 1,
+    num_distinct_actions=_MAX_ACTION,
     max_chance_outcomes=_RANGE[1] - _RANGE[0],
     num_players=_NUM_PLAYERS,
-    min_utility=-_BALANCE,
-    max_utility=_DONT_USE,
-    max_game_length=_GAME_LENGTH)  
+    min_utility=-50,
+    max_utility=50,
+    max_game_length=_GAME_LENGTH*2)  
 
 
 class TradingGameGame(pyspiel.Game):
@@ -97,13 +101,15 @@ class TradingGameState(pyspiel.State):
     self.dataframe = _DF
     self.start_time = -1
     self.time_elapsed = 0
-    self.price = -1
-    self.holding = 0
-    self.balance = _BALANCE
-    self._rewards = np.zeros(_NUM_PLAYERS)
-    self._returns = np.zeros(_NUM_PLAYERS)
+    self.start_price = -1
+    self.start_volume = -1
+    self.price = np.array([-1,-1,-1,-1,-1])
+    self.holding = [0, 0]
+    self.balance = [_BALANCE, _BALANCE]
     self._game_over = False
     self._next_player = 0
+    self._rewards = [0, 0]
+    self._returns = [0, 0]
 
   # OpenSpiel (PySpiel) API functions are below. This is the standard set that
   # should be implemented by every sequential-move game with chance.
@@ -120,7 +126,9 @@ class TradingGameState(pyspiel.State):
   def _legal_actions(self, player):
     """Returns a list of legal actions, sorted in ascending order."""
     assert player >= 0
-    return [a for a in range(2*_MAX_ACTION + 1) if _coord(a) >= -self.holding and _coord(a) <= self.balance//self.price[0]]
+    if self.holding[player] == 0:
+      return [Action.BUY, Action.HOLD]
+    return [Action.HOLD, Action.SELL]
 
 
   def chance_outcomes(self):
@@ -135,22 +143,37 @@ class TradingGameState(pyspiel.State):
     if self.is_chance_node():
       self.start_time = action
       self.price = np.array(self.dataframe.iloc[self.start_time])
+      self.start_price = self.price[0]
+      self.start_volume = self.price[1]
+      self.price = self.price/self.start_price
+      self.price[1] = self.price[1]*self.start_price/self.start_volume
       self._next_player = 0
     else:
-      self.holding += _coord(action)
-      self.balance -= self.price[0]*_coord(action)
-      self.time_elapsed += 1
-      self.price = np.array(self.dataframe.iloc[self.start_time + self.time_elapsed])
-      self._rewards[self._next_player] = self.holding*self.price[0] + self.balance - _BALANCE - self._returns[self._next_player]
-      self._returns[self._next_player] = self.holding*self.price[0] + self.balance - _BALANCE
+      if action==Action.BUY:
+        self.holding[self._next_player] = 1
+        self.balance[self._next_player] -= self.price[0]
+      elif action==Action.SELL:
+        self.holding[self._next_player] = 0
+        self.balance[self._next_player] += self.price[0]
+      if self._next_player == 1:
+        self.time_elapsed += 1
+      self.price = np.array(self.dataframe.iloc[self.start_time + self.time_elapsed])/self.start_price
+      self.price[1] = self.price[1]*self.start_price/self.start_volume
+      self._rewards = [self.holding[0]*self.price[0] + self.balance[0] - self._returns[0], self.holding[1]*self.price[0] + self.balance[1] - self._returns[1]]
+      self._returns = [self._returns[0] + self._rewards[0], self._returns[1] + self._rewards[1]]
       self._game_over = self.time_elapsed >= _GAME_LENGTH
-      self._next_player = 0
+      self._next_player = 1 - self._next_player
 
   def _action_to_string(self, player, action):
     """Action -> string."""
     if player == pyspiel.PlayerId.CHANCE:
       return f"Start Time = {action}"
-    return f"Buying: {_coord(action)}"
+    elif action == Action.BUY:
+      return "Buy"
+    elif action == Action.HOLD:
+      return "Hold"
+    else:
+      return "Sell"
 
   def is_terminal(self):
     """Returns True if the game is over."""
@@ -168,11 +191,10 @@ class TradingGameState(pyspiel.State):
     """String for debug purposes. No particular semantics are required."""
     return "".join(map(str, ["Start Time:", self.start_time,"\n",
                              "Time Elapsed:", self.time_elapsed,"\n",
+                             "start Price:", self.start_price, "\n",
                              "price:", self.price,"\n",
                              "holding:", self.holding,"\n",
                              "balance:", self.balance,"\n",
-                             "_rewards", self._rewards, "\n",
-                             "_returns", self._returns, "\n",
                              "_game_over:",self._game_over,"\n",
                              "_next_player",self._next_player,"\n"
                              ]))
@@ -187,16 +209,13 @@ class TradingGameObserver:
       raise ValueError(f"Observation parameters not supported; passed {params}")
 
     # Determine which observation pieces we want to include.
-    pieces = []
-  
+    pieces = [("player", 1, (1,))]
     if iig_obs_type.private_info == pyspiel.PrivateInfoType.SINGLE_PLAYER:
       pieces.append(("holding", 1, (1,)))
       pieces.append(("balance", 1, (1,)))
     if iig_obs_type.public_info:
-      if iig_obs_type.perfect_recall:
-        pieces.append(("price_history", _GAME_LENGTH*5, (_GAME_LENGTH, 5)))
-      else:
-        pieces.append(("current_price", 5, (5,)))
+      pieces.append(("time_elapsed", 1, (1,)))
+      pieces.append(("price", 5, (5,)))
 
     # Build the single flat tensor.
     total_size = sum(size for name, size, shape in pieces)
@@ -212,32 +231,33 @@ class TradingGameObserver:
   def set_from(self, state, player):
     """Updates `tensor` and `dict` to reflect `state` from PoV of `player`."""
     self.tensor.fill(0)
+    if "player" in self.dict:
+      self.dict["player"][0] = player
     if "holding" in self.dict:
-      self.dict["holding"][player] = state.holding
+      self.dict["holding"][0] = state.holding[player]
     if "balance" in self.dict:
-      self.dict["balance"][player] = state.balance
-    if "current_price" in self.dict:
-      self.dict["current_price"][:] = state.price
-    if "price_history" in self.dict:
-      for i in range(state.time_elapsed):
-        self.dict["price_history"][i] = np.array(state.dataframe.iloc[state.start_time + i])
+      self.dict["balance"][0] = state.balance[player]
+    if "time_elapsed" in self.dict:
+      self.dict["time_elapsed"][0] = state.time_elapsed
+    if "price" in self.dict:
+      self.dict["price"][:] = state.price
+    
 
   def string_from(self, state, player):
     """Observation of `state` from the PoV of `player`, as a string."""
     pieces = []
+    if "player" in self.dict:
+      pieces.append(f"p:{player}")
     if "holding" in self.dict:
-      pieces.append(f"holding{state.holding}")
+      pieces.append(f"holding:{state.holding[player]}")
     if "balance" in self.dict:
-      pieces.append(f"balance:{state.balance}")
-    if "current_price" in self.dict:
-      pieces.append(f"current_price:{state.price}")
-    if "price_history" in self.dict:
-      pieces.append(f"price_history:{np.array(state.dataframe.iloc[state.start_time:state.start_time+state.time_elapsed])}")
+      pieces.append(f"balance:{state.balance[player]}")
+    if "time_elapsed" in self.dict:
+      pieces.append(f"time_elapsed:{state.time_elapsed}")
+    if "price" in self.dict:
+      pieces.append(f"price:{state.price}")
     return " ".join(str(p) for p in pieces)
 
-def _coord(move):
-  all_moves = list(range(-_MAX_ACTION, _MAX_ACTION + 1))
-  return all_moves[move]
 # Register the game with the OpenSpiel library
 
 pyspiel.register_game(_GAME_TYPE, TradingGameGame)

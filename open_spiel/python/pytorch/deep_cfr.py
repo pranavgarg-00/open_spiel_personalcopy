@@ -31,7 +31,8 @@ from scipy import stats
 import torch
 from torch import nn
 import torch.nn.functional as F
-
+from tqdm import tqdm
+from absl import logging
 from open_spiel.python import policy
 import pyspiel
 
@@ -331,6 +332,14 @@ class DeepCFRSolver(policy.Policy):
         # Re-initialize advantage networks and train from scratch.
         advantage_losses[p].append(self._learn_advantage_network(p))
       self._iteration += 1
+      retavg0, retavg1, retstd0, retstd1 = self.evaluate_sample_runs(20000)
+      logging.info("\n\n")
+      logging.info("iteration: " + str(self._iteration))
+      logging.info("Player 0 avg returns on 20000 runs: " + str(retavg0))
+      logging.info("Player 1 avg returns on 20000 runs: " + str(retavg1))
+      logging.info("Player 0 std on 20000 runs: " + str(retstd0))
+      logging.info("Player 1 std on 20000 runs: " + str(retstd1))
+
       # Train policy network.
     policy_loss = self._learn_strategy_network()
     return self._policy_network, advantage_losses, policy_loss
@@ -511,3 +520,31 @@ class DeepCFRSolver(policy.Policy):
       self._optimizer_policy.step()
 
     return loss_strategy.detach().numpy()
+
+  def evaluate_sample_runs(self, num_runs):
+    run_returns_p0 = []
+    run_returns_p1 = []
+    for i in range(num_runs):
+      run_state = self._game.new_initial_state()
+      while not run_state.is_terminal():
+        if run_state.is_chance_node():
+          run_outcomes = run_state.chance_outcomes()
+          run_action_list, run_prob_list = zip(*run_outcomes)
+          run_chance_action = np.random.choice(run_action_list, p=run_prob_list)
+          run_state.apply_action(run_chance_action)
+        else:
+          run_action_probs = self.action_probabilities(run_state)
+          temp_sum = sum(run_action_probs.values())
+          run_action_outcomes = []
+          for actiontmp in run_action_probs:
+            run_action_outcomes.append((actiontmp, run_action_probs[actiontmp]/temp_sum))
+          run_action_list, run_prob_list = zip(*run_action_outcomes)
+          run_player_action = np.random.choice(run_action_list, p=run_prob_list)
+          run_state.apply_action(run_player_action)
+      run_returns_p0.append(run_state.returns()[0])
+      run_returns_p1.append(run_state.returns()[1])
+    return_mean_p0 = np.mean(run_returns_p0)
+    return_mean_p1 = np.mean(run_returns_p1)
+    return_std_p0 = np.std(run_returns_p0)
+    return_std_p1 = np.std(run_returns_p1)
+    return return_mean_p0, return_mean_p1, return_std_p0, return_std_p1   
